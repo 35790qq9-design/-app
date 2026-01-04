@@ -1,0 +1,8 @@
+{
+  "name": "Visionary Hub",
+  "description": "An AI-powered image and text management system featuring real-time OCR editing, automatic classification, and a Gemini 2.5 Native Audio voice assistant for hands-free organization.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
