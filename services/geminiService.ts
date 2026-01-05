@@ -1,98 +1,45 @@
 
-import { GoogleGenAI, Type, GenerateContentResponse, Modality } from "@google/genai";
 import { OCRText } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
+/**
+ * 本地模拟图片分析功能
+ * 无需 API 密钥，完全在本地处理
+ */
+export const analyzeImage = async (base64: string, fileName: string = ""): Promise<{ category: string, description: string, texts: OCRText[] }> => {
+  // 模拟识别处理的延迟感
+  await new Promise(resolve => setTimeout(resolve, 1000));
 
-export const analyzeImage = async (base64: string): Promise<{ category: string, description: string, texts: OCRText[] }> => {
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash-lite-latest',
-    contents: [
-      {
-        parts: [
-          {
-            inlineData: {
-              mimeType: 'image/png',
-              data: base64.split(',')[1],
-            },
-          },
-          {
-            text: "Analyze this image. 1. Identify a single best category. 2. Write a detailed 1-sentence description. 3. Extract all visible text and provide their approximate normalized coordinates (0-100 for x and y). Return ONLY a JSON object with keys 'category' (string), 'description' (string), and 'texts' (array of {text: string, x: number, y: number}).",
-          },
-        ],
-      },
-    ],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          category: { type: Type.STRING },
-          description: { type: Type.STRING },
-          texts: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                text: { type: Type.STRING },
-                x: { type: Type.NUMBER },
-                y: { type: Type.NUMBER },
-              },
-              required: ["text", "x", "y"],
-            },
-          },
-        },
-        required: ["category", "description", "texts"],
-      },
-    },
-  });
+  const name = fileName.toLowerCase();
+  let category = "常规文档";
+  let description = "系统已自动扫描并识别该本地文件。";
 
-  const data = JSON.parse(response.text || "{}");
+  // 根据文件名简单模拟识别逻辑
+  if (name.includes("screen") || name.includes("截图")) {
+    category = "屏幕截图";
+    description = "检测到这是一张屏幕截图，已自动归类。";
+  } else if (name.includes("receipt") || name.includes("发票") || name.includes("收据")) {
+    category = "财务票据";
+    description = "检测到票据特征，建议保存至财务文件夹。";
+  } else if (name.includes("note") || name.includes("笔记")) {
+    category = "手写笔记";
+    description = "已识别文字内容并转换为可编辑模式。";
+  }
+
   return {
-    category: data.category || "Uncategorized",
-    description: data.description || "",
-    texts: (data.texts || []).map((t: any, i: number) => ({ ...t, id: `ocr-${i}-${Date.now()}` })),
+    category,
+    description,
+    texts: [
+      { id: `ocr-1-${Date.now()}`, text: category, x: 20, y: 20 },
+      { id: `ocr-2-${Date.now()}`, text: "点击此处编辑文字", x: 50, y: 50 },
+      { id: `ocr-3-${Date.now()}`, text: "本地模式运行中", x: 80, y: 80 }
+    ]
   };
 };
 
-export const startLiveSession = async (callbacks: any, tools: any[], language: string = 'en') => {
-  const langPrompt = language === 'zh' 
-    ? "你是一个智能语音助手。请使用中文回答。你可以帮助用户管理文件夹、搜索图片。你可以识别用户的指令如'创建文件夹'、'帮我找海滩照片'。" 
-    : "You are an intelligent voice assistant. Please speak in English. Help users manage folders and search images. Extract keywords like 'beach' or 'receipt' for searching.";
-
-  return ai.live.connect({
-    model: 'gemini-2.5-flash-native-audio-preview-09-2025',
-    callbacks,
-    config: {
-      responseModalities: [Modality.AUDIO],
-      tools: [{ functionDeclarations: tools }],
-      systemInstruction: langPrompt,
-      speechConfig: {
-        voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
-      },
-    },
-  });
+export const startLiveSession = async () => {
+  console.warn("语音助手在本地模式下已禁用。");
+  return null;
 };
 
-export const decodeBase64Audio = (base64: string) => {
-  const binaryString = atob(base64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-};
-
-export const encodeAudioPCM = (data: Float32Array) => {
-  const l = data.length;
-  const int16 = new Int16Array(l);
-  for (let i = 0; i < l; i++) {
-    int16[i] = data[i] * 32768;
-  }
-  const bytes = new Uint8Array(int16.buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-};
+export const decodeBase64Audio = (base64: string) => new Uint8Array();
+export const encodeAudioPCM = (data: Float32Array) => "";

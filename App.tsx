@@ -4,16 +4,26 @@ import { analyzeImage } from './services/geminiService';
 import { AppState, ImageItem, Folder, OCRText } from './types';
 import { Sidebar } from './components/Sidebar';
 import { ImageOverlay } from './components/ImageOverlay';
-import { LiveAssistant } from './components/LiveAssistant';
-import { PlusIcon } from './components/Icons';
+import { PlusIcon, TrashIcon, FolderIcon, MicIcon } from './components/Icons';
 import { translations, Language } from './i18n';
 
-const LOCAL_STORAGE_KEY = 'visionary_hub_state_v1';
+const LOCAL_STORAGE_KEY = 'visionary_hub_state_offline_v1';
+
+// 定义语音识别接口类型
+interface SpeechRecognitionEvent extends Event {
+  results: {
+    [key: number]: {
+      [key: number]: {
+        transcript: string;
+      };
+    };
+  };
+}
 
 const App: React.FC = () => {
-  const [language, setLanguage] = useState<Language>('en');
+  const [language, setLanguage] = useState<Language>('zh');
+  const [viewMode, setViewMode] = useState<'desktop' | 'mobile'>('desktop');
   const [state, setState] = useState<AppState>(() => {
-    // Initial state hydration from localStorage
     const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (saved) {
       try {
@@ -24,7 +34,7 @@ const App: React.FC = () => {
     }
     return {
       images: [],
-      folders: [{ id: 'all', name: 'All Files' }],
+      folders: [{ id: 'all', name: '全部文件' }],
       currentFolderId: 'all',
       searchQuery: '',
     };
@@ -32,21 +42,118 @@ const App: React.FC = () => {
 
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [syncProgress, setSyncProgress] = useState<{ active: boolean, service: string }>({ active: false, service: '' });
   const [isSaving, setIsSaving] = useState(false);
-  const saveTimeoutRef = useRef<number | null>(null);
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [batchSelectedIds, setBatchSelectedIds] = useState<string[]>([]);
+  const [isMoving, setIsMoving] = useState(false);
+  
+  // 语音识别状态
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
+  const saveTimeoutRef = useRef<number | null>(null);
   const t = translations[language];
 
-  // Persistence Effect
   useEffect(() => {
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(state));
-    
-    // Show saving indicator briefly
     setIsSaving(true);
     if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
-    saveTimeoutRef.current = window.setTimeout(() => setIsSaving(false), 1000);
+    saveTimeoutRef.current = window.setTimeout(() => setIsSaving(false), 800);
   }, [state]);
+
+  // 处理创建文件夹并移动图片的逻辑
+  const handleCreateFolderAndMove = useCallback((folderName: string) => {
+    const newFolderId = `folder-${Date.now()}`;
+    const newFolder: Folder = { id: newFolderId, name: folderName };
+
+    setState(prev => {
+      // 确定需要移动的图片 ID 列表
+      let idsToMove: string[] = [];
+      
+      // 逻辑：如果开启了多选且有选中，则移动选中的；
+      // 如果没有多选但正在查看一张图，则移动那张图；
+      // 否则移动当前视图下过滤出的所有图片（符合用户说的“图片都送到那”）
+      if (batchSelectedIds.length > 0) {
+        idsToMove = [...batchSelectedIds];
+      } else if (selectedImageId) {
+        idsToMove = [selectedImageId];
+      } else {
+        // 移动当前视图展示的所有图片
+        const currentImages = prev.images.filter(img => {
+          const inFolder = prev.currentFolderId === 'all' || img.folderId === prev.currentFolderId;
+          const matchesSearch = !prev.searchQuery || img.name.toLowerCase().includes(prev.searchQuery.toLowerCase());
+          return inFolder && matchesSearch;
+        });
+        idsToMove = currentImages.map(img => img.id);
+      }
+
+      const nextImages = prev.images.map(img => 
+        idsToMove.includes(img.id) ? { ...img, folderId: newFolderId } : img
+      );
+
+      return {
+        ...prev,
+        folders: [...prev.folders, newFolder],
+        images: nextImages,
+        currentFolderId: newFolderId 
+      };
+    });
+
+    // 重置状态
+    setBatchSelectedIds([]);
+    setMultiSelectMode(false);
+    setSelectedImageId(null);
+  }, [batchSelectedIds, selectedImageId]);
+
+  // 初始化原生语音识别
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = language === 'zh' ? 'zh-CN' : 'en-US';
+
+      recognition.onstart = () => setIsListening(true);
+      recognition.onend = () => setIsListening(false);
+      recognition.onerror = () => setIsListening(false);
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
+        const transcript = event.results[0][0].transcript.trim();
+        
+        // 1. 切换视图指令
+        if (transcript.includes("切换视图") || transcript.includes("switch view")) {
+          setViewMode(v => v === 'desktop' ? 'mobile' : 'desktop');
+        } 
+        // 2. 切换语言指令
+        else if (transcript.includes("切换语言") || transcript.includes("switch language")) {
+          setLanguage(l => l === 'en' ? 'zh' : 'en');
+        } 
+        // 3. 创建文件夹指令
+        else if (transcript.startsWith("创建文件夹") || transcript.toLowerCase().startsWith("create folder")) {
+          const folderName = transcript
+            .replace(/创建文件夹/g, "")
+            .replace(/create folder/gi, "")
+            .trim();
+          if (folderName) {
+            handleCreateFolderAndMove(folderName);
+          }
+        }
+        // 4. 普通搜索
+        else {
+          setState(prev => ({ ...prev, searchQuery: transcript }));
+        }
+      };
+      recognitionRef.current = recognition;
+    }
+  }, [language, handleCreateFolderAndMove]);
+
+  const toggleListening = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+    } else {
+      recognitionRef.current?.start();
+    }
+  };
 
   const filteredImages = useMemo(() => {
     let imgs = state.images;
@@ -73,65 +180,26 @@ const App: React.FC = () => {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setIsAnalyzing(true);
     const reader = new FileReader();
     reader.onload = async (event) => {
       const base64 = event.target?.result as string;
-      try {
-        const { category, description, texts } = await analyzeImage(base64);
-        const newItem: ImageItem = {
-          id: `img-${Date.now()}`,
-          url: URL.createObjectURL(file), 
-          base64, 
-          name: file.name,
-          category,
-          description,
-          ocrTexts: texts,
-          folderId: 'all'
-        };
-        setState(prev => ({ ...prev, images: [newItem, ...prev.images] }));
-      } catch (err) {
-        console.error("Analysis failed", err);
-      } finally {
-        setIsAnalyzing(false);
-      }
+      const { category, description, texts } = await analyzeImage(base64, file.name);
+      const newItem: ImageItem = {
+        id: `img-${Date.now()}`,
+        url: base64, 
+        base64, 
+        name: file.name,
+        category,
+        description,
+        ocrTexts: texts,
+        folderId: state.currentFolderId === 'all' ? 'all' : state.currentFolderId!
+      };
+      setState(prev => ({ ...prev, images: [newItem, ...prev.images] }));
+      setIsAnalyzing(false);
     };
     reader.readAsDataURL(file);
   };
-
-  const handleCloudSync = async (service: 'drive' | 'photos') => {
-    if (state.images.length === 0) return;
-    setSyncProgress({ active: true, service });
-    await new Promise(r => setTimeout(r, 2000));
-    alert(t.syncSuccess);
-    setSyncProgress({ active: false, service: '' });
-  };
-
-  const handleCloudFetch = async (service: 'drive' | 'photos') => {
-    setSyncProgress({ active: true, service });
-    await new Promise(r => setTimeout(r, 1500));
-    alert(t.importSuccess);
-    setSyncProgress({ active: false, service: '' });
-  };
-
-  const handleVoiceCommand = useCallback((name: string, args: any) => {
-    setState(prev => {
-      switch (name) {
-        case 'create_folder':
-          if (prev.folders.some(f => f.name === args.name)) return prev;
-          return {
-            ...prev,
-            folders: [...prev.folders, { id: `folder-${Date.now()}`, name: args.name }]
-          };
-        case 'search_items':
-          setSelectedImageId(null);
-          return { ...prev, searchQuery: args.query, currentFolderId: 'all' };
-        default:
-          return prev;
-      }
-    });
-  }, []);
 
   const updateImageTitle = (id: string, newTitle: string) => {
     setState(prev => ({
@@ -147,210 +215,259 @@ const App: React.FC = () => {
     }));
   };
 
+  const toggleBatchSelection = (id: string) => {
+    setBatchSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleBatchDelete = () => {
+    if (!window.confirm(`确认删除这 ${batchSelectedIds.length} 项?`)) return;
+    setState(prev => ({
+      ...prev,
+      images: prev.images.filter(img => !batchSelectedIds.includes(img.id))
+    }));
+    setBatchSelectedIds([]);
+    setMultiSelectMode(false);
+  };
+
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50 text-gray-900">
-      <Sidebar 
-        folders={state.folders} 
-        currentId={state.currentFolderId} 
-        language={language}
-        onSelect={(id) => setState(prev => ({ ...prev, currentFolderId: id }))} 
-        onDeleteFolder={(id) => setState(prev => ({
-          ...prev, 
-          folders: prev.folders.filter(f => f.id !== id),
-          currentFolderId: prev.currentFolderId === id ? 'all' : prev.currentFolderId
-        }))}
-        onCloudSync={handleCloudSync}
-        onCloudFetch={handleCloudFetch}
-      />
-
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-20 glass-effect flex items-center justify-between px-8 z-10 border-b border-gray-200">
-          <div className="flex-1 max-w-xl relative flex items-center">
-            <input 
-              type="text" 
-              placeholder={t.searchPlaceholder} 
-              className={`w-full bg-white/80 backdrop-blur-sm border border-gray-200 rounded-2xl px-5 py-3 focus:ring-4 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all pr-12 ${state.searchQuery ? 'border-blue-300 ring-2 ring-blue-50' : ''}`}
-              value={state.searchQuery}
-              onChange={(e) => setState(prev => ({ ...prev, searchQuery: e.target.value }))}
-            />
-            {state.searchQuery && (
-              <button 
-                onClick={() => setState(prev => ({ ...prev, searchQuery: '' }))}
-                className="absolute right-4 p-1 rounded-full hover:bg-gray-100 text-gray-400 transition-colors"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            )}
-          </div>
-          
-          <div className="flex items-center gap-6 ml-6">
-            {/* Auto-save indicator */}
-            <div className={`flex items-center gap-2 transition-opacity duration-500 ${isSaving ? 'opacity-100' : 'opacity-0'}`}>
-              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Auto-Saved</span>
-            </div>
-
-            {/* Language Toggle */}
-            <button 
-              onClick={() => setLanguage(l => l === 'en' ? 'zh' : 'en')}
-              className="flex items-center gap-2 px-4 py-2 bg-white rounded-xl border border-gray-200 shadow-sm text-xs font-black uppercase tracking-widest hover:bg-gray-50 transition-colors"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 text-blue-600">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9s2.015-9 4.5-9m0 18c1.17 0 2.227-1.383 2.91-3.5M12 3c1.17 0 2.227 1.383 2.91 3.5m-5.82 0A15.903 15.903 0 0 1 12 3.5c1.17 0 2.227 1.383 2.91 3.5m-5.82 0A15.903 15.903 0 0 0 9.09 7.5c-1.17 0-2.227 1.383-2.91 3.5" />
-              </svg>
-              {language === 'en' ? 'CN' : 'EN'}
-            </button>
-
-            <label className="flex items-center gap-2 bg-gradient-to-br from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white px-6 py-3 rounded-2xl cursor-pointer transition-all shadow-xl shadow-blue-100 font-bold active:scale-95 disabled:opacity-50">
-              {isAnalyzing ? (
-                <div className="w-5 h-5 border-3 border-white border-t-transparent rounded-full animate-spin"></div>
-              ) : <PlusIcon />}
-              <span>{t.upload}</span>
-              <input type="file" className="hidden" accept="image/*" onChange={handleFileUpload} disabled={isAnalyzing} />
-            </label>
-          </div>
-        </header>
-
-        {syncProgress.active && (
-          <div className="bg-blue-600 text-white px-8 py-2 flex items-center justify-between animate-pulse">
-            <span className="text-xs font-black uppercase tracking-[0.2em]">{t.syncing} {syncProgress.service}</span>
-            <div className="h-1 w-64 bg-white/20 rounded-full overflow-hidden">
-              <div className="h-full bg-white w-1/2 animate-[progress_1.5s_infinite_linear]"></div>
-            </div>
-          </div>
+    <div className={`flex h-screen overflow-hidden bg-slate-200 transition-all duration-500 items-center justify-center p-0 md:p-4 ${viewMode === 'mobile' ? 'bg-slate-300' : 'bg-gray-50'}`}>
+      
+      <div className={`flex h-full bg-white shadow-2xl transition-all duration-500 overflow-hidden ${
+        viewMode === 'mobile' ? 'w-[375px] max-h-[812px] rounded-[3rem] border-[8px] border-slate-800' : 'w-full rounded-none md:rounded-3xl'
+      }`}>
+        
+        {viewMode === 'desktop' && (
+          <Sidebar 
+            folders={state.folders} 
+            currentId={state.currentFolderId} 
+            language={language}
+            onSelect={(id) => {
+              setState(prev => ({ ...prev, currentFolderId: id }));
+              setSelectedImageId(null);
+              setBatchSelectedIds([]);
+              setMultiSelectMode(false);
+            }} 
+            onDeleteFolder={(id) => setState(prev => ({
+              ...prev, 
+              folders: prev.folders.filter(f => f.id !== id),
+              currentFolderId: prev.currentFolderId === id ? 'all' : prev.currentFolderId
+            }))}
+          />
         )}
 
-        <section className="flex-1 overflow-y-auto p-8 bg-slate-50/50">
-          {selectedImage ? (
-            <div className="max-w-5xl mx-auto">
-              <button 
-                onClick={() => setSelectedImageId(null)}
-                className="mb-8 flex items-center gap-3 text-gray-400 hover:text-blue-600 font-bold uppercase tracking-wider text-xs transition-colors"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-4 h-4">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
-                </svg>
-                {t.back}
-              </button>
-              <div className="flex flex-col lg:flex-row gap-10">
-                <div className="flex-1">
-                  <ImageOverlay 
-                    imageUrl={selectedImage.url || selectedImage.base64} 
-                    texts={selectedImage.ocrTexts}
-                    onUpdateText={(tid, txt) => {
-                      setState(prev => ({
-                        ...prev,
-                        images: prev.images.map(img => img.id === selectedImage.id ? {
-                          ...img,
-                          ocrTexts: img.ocrTexts.map(t => t.id === tid ? { ...t, text: txt } : t)
-                        } : img)
-                      }));
-                    }}
-                    onRemoveText={(tid) => {
-                      setState(prev => ({
-                        ...prev,
-                        images: prev.images.map(img => img.id === selectedImage.id ? {
-                          ...img,
-                          ocrTexts: img.ocrTexts.filter(t => t.id !== tid)
-                        } : img)
-                      }));
-                    }}
-                    onAddText={(x, y) => {
-                      const newText: OCRText = { id: `manual-${Date.now()}`, text: 'New Text', x, y };
-                      setState(prev => ({
-                        ...prev,
-                        images: prev.images.map(img => img.id === selectedImage.id ? {
-                          ...img,
-                          ocrTexts: [...img.ocrTexts, newText]
-                        } : img)
-                      }));
-                    }}
-                  />
-                </div>
-                <div className="w-full lg:w-96 space-y-6">
-                  <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100">
-                    <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-6">{t.fileIntel}</h3>
-                    <div className="space-y-6">
-                      <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-2">{t.titleLabel}</label>
-                        <input 
-                          type="text"
-                          className="w-full text-sm font-bold bg-gray-50 border border-gray-100 rounded-xl px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                          value={selectedImage.name}
-                          onChange={(e) => updateImageTitle(selectedImage.id, e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-2">{t.description}</label>
-                        <p className="text-sm font-medium leading-relaxed text-gray-700 italic">"{selectedImage.description}"</p>
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-2">{t.classification}</label>
-                        <input 
-                          type="text"
-                          className="w-full text-xs font-black uppercase tracking-wider bg-blue-50 border border-blue-100 text-blue-700 rounded-xl px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                          value={selectedImage.category}
-                          onChange={(e) => updateImageCategory(selectedImage.id, e.target.value)}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
+        <main className="flex-1 flex flex-col overflow-hidden relative">
+          <header className={`glass-effect flex flex-wrap items-center justify-between z-10 border-b border-gray-100 ${viewMode === 'mobile' ? 'px-4 py-3' : 'h-20 px-8'}`}>
+            <div className={`flex-1 relative flex items-center gap-2 ${viewMode === 'mobile' ? 'w-full order-last mt-3' : 'max-w-md'}`}>
+              <div className="relative flex-1">
+                <input 
+                  type="text" 
+                  placeholder={t.searchPlaceholder} 
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2 pr-10 text-sm focus:ring-2 focus:ring-blue-400 outline-none transition-all"
+                  value={state.searchQuery}
+                  onChange={(e) => setState(prev => ({ ...prev, searchQuery: e.target.value }))}
+                />
+                <button 
+                  onClick={toggleListening}
+                  className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition-all ${
+                    isListening ? 'bg-red-500 text-white animate-pulse' : 'text-gray-400 hover:bg-gray-200'
+                  }`}
+                  title="语音指令：'创建文件夹 [名称]'"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z" />
+                  </svg>
+                </button>
               </div>
             </div>
-          ) : (
-            <div className="max-w-7xl mx-auto">
-              {state.searchQuery && (
-                <div className="mb-8 flex items-center gap-4">
-                   <h2 className="text-xl font-black text-gray-900">
-                    {language === 'en' ? 'Search Results for' : '搜索结果：'} <span className="text-blue-600">"{state.searchQuery}"</span>
-                   </h2>
-                   <span className="px-3 py-1 bg-gray-100 text-gray-500 rounded-full text-xs font-bold">
-                    {filteredImages.length} {language === 'en' ? 'found' : '个结果'}
-                   </span>
-                </div>
-              )}
-              
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-8">
-                {filteredImages.length > 0 ? filteredImages.map(img => (
-                  <div 
-                    key={img.id} 
-                    className="group flex flex-col cursor-pointer transition-all active:scale-95"
-                    onClick={() => setSelectedImageId(img.id)}
-                  >
-                    <div className="aspect-[4/5] rounded-3xl overflow-hidden mb-4 relative shadow-md shadow-gray-200 group-hover:shadow-2xl group-hover:shadow-blue-100 transition-all group-hover:-translate-y-2 border-4 border-white">
-                      <img src={img.url || img.base64} alt={img.name} className="w-full h-full object-cover" />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-4">
-                        <p className="text-[10px] text-white/80 font-bold uppercase tracking-wider truncate mb-1">{img.category}</p>
-                        <p className="text-xs text-white font-medium line-clamp-2">{img.description}</p>
-                      </div>
-                    </div>
-                    <div className="px-1">
-                      <p className="text-sm font-bold text-gray-800 truncate mb-1">{img.name}</p>
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-blue-400"></div>
-                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">{img.ocrTexts.length} {t.ocrBlocks}</p>
-                      </div>
-                    </div>
-                  </div>
-                )) : (
-                  <div className="col-span-full py-32 flex flex-col items-center justify-center text-gray-300">
-                    <div className="w-24 h-24 mb-6 bg-gray-100 rounded-[2.5rem] flex items-center justify-center text-gray-200">
-                       <PlusIcon />
-                    </div>
-                    <p className="text-lg font-black text-gray-400 uppercase tracking-widest">{t.emptyGallery}</p>
-                    <p className="text-sm mt-2 text-gray-400">{t.emptySub}</p>
-                  </div>
+            
+            <div className="flex items-center gap-2 ml-4">
+              <button 
+                onClick={() => setViewMode(v => v === 'desktop' ? 'mobile' : 'desktop')}
+                className="p-2 bg-gray-100 rounded-xl hover:bg-gray-200 transition-colors"
+                title="切换视图"
+              >
+                {viewMode === 'desktop' ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 0 0 6 3.75v16.5a2.25 2.25 0 0 0 2.25 2.25h7.5A2.25 2.25 0 0 0 18 20.25V3.75a2.25 2.25 0 0 0-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3" />
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 0 1-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0 1 15 18.257V17.25m6-12V15a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 15V5.25m18 0A2.25 2.25 0 0 0 18.75 3H5.25A2.25 2.25 0 0 0 3 5.25m18 0V12a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 12V5.25" />
+                  </svg>
                 )}
+              </button>
+
+              {!selectedImageId && (
+                <button 
+                  onClick={() => {
+                    setMultiSelectMode(!multiSelectMode);
+                    setBatchSelectedIds([]);
+                  }}
+                  className={`px-3 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest transition-all ${
+                    multiSelectMode ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white border-gray-200 text-gray-600'
+                  }`}
+                >
+                  {multiSelectMode ? t.cancel : t.select}
+                </button>
+              )}
+
+              <button 
+                onClick={() => setLanguage(l => l === 'en' ? 'zh' : 'en')}
+                className="px-3 py-2 bg-white rounded-xl border border-gray-200 text-[10px] font-black"
+              >
+                {language === 'en' ? 'CN' : 'EN'}
+              </button>
+
+              <label className="flex items-center gap-1 bg-blue-600 text-white px-4 py-2 rounded-xl cursor-pointer hover:bg-blue-700 transition-all text-sm font-bold shadow-lg">
+                {isAnalyzing ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <PlusIcon />}
+                <span>{t.upload}</span>
+                <input type="file" className="hidden" accept="image/*" onChange={handleFileUpload} disabled={isAnalyzing} />
+              </label>
+            </div>
+          </header>
+
+          {multiSelectMode && batchSelectedIds.length > 0 && (
+            <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 flex items-center justify-between flex-wrap gap-2">
+              <span className="text-xs font-black text-blue-700">{batchSelectedIds.length} {t.itemsSelected}</span>
+              <div className="flex gap-2">
+                <button 
+                  onClick={handleBatchDelete}
+                  className="px-2 py-1 bg-red-50 border border-red-100 rounded text-[10px] font-bold text-red-600"
+                >
+                  {t.deleteSelected}
+                </button>
               </div>
             </div>
           )}
-        </section>
-      </main>
 
-      <LiveAssistant onCommand={handleVoiceCommand} language={language} />
+          <section className="flex-1 overflow-y-auto p-4 md:p-8 bg-slate-50">
+            {selectedImage ? (
+              <div className="max-w-5xl mx-auto">
+                <button 
+                  onClick={() => setSelectedImageId(null)}
+                  className="mb-6 flex items-center gap-2 text-gray-400 hover:text-blue-600 font-bold uppercase text-[10px]"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+                  </svg>
+                  {t.back}
+                </button>
+                <div className={`flex flex-col gap-6 ${viewMode === 'desktop' ? 'lg:flex-row' : ''}`}>
+                  <div className="flex-1">
+                    <ImageOverlay 
+                      imageUrl={selectedImage.url} 
+                      texts={selectedImage.ocrTexts}
+                      onUpdateText={(tid, txt) => {
+                        setState(prev => ({
+                          ...prev,
+                          images: prev.images.map(img => img.id === selectedImage.id ? {
+                            ...img,
+                            ocrTexts: img.ocrTexts.map(t => t.id === tid ? { ...t, text: txt } : t)
+                          } : img)
+                        }));
+                      }}
+                      onRemoveText={(tid) => {
+                        setState(prev => ({
+                          ...prev,
+                          images: prev.images.map(img => img.id === selectedImage.id ? {
+                            ...img,
+                            ocrTexts: img.ocrTexts.filter(t => t.id !== tid)
+                          } : img)
+                        }));
+                      }}
+                      onAddText={(x, y) => {
+                        const newText: OCRText = { id: `manual-${Date.now()}`, text: 'New Text', x, y };
+                        setState(prev => ({
+                          ...prev,
+                          images: prev.images.map(img => img.id === selectedImage.id ? {
+                            ...img,
+                            ocrTexts: [...img.ocrTexts, newText]
+                          } : img)
+                        }));
+                      }}
+                    />
+                  </div>
+                  <div className={`${viewMode === 'desktop' ? 'w-80' : 'w-full'} space-y-4`}>
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+                      <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4">{t.fileIntel}</h3>
+                      <div className="space-y-4">
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">{t.titleLabel}</label>
+                          <input 
+                            type="text"
+                            className="w-full text-xs font-bold bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
+                            value={selectedImage.name}
+                            onChange={(e) => updateImageTitle(selectedImage.id, e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">{t.classification}</label>
+                          <input 
+                            type="text"
+                            className="w-full text-xs font-bold bg-blue-50 border border-blue-100 text-blue-700 rounded-lg px-3 py-2 outline-none"
+                            value={selectedImage.category}
+                            onChange={(e) => updateImageCategory(selectedImage.id, e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">{t.description}</label>
+                          <p className="text-[11px] text-gray-600 leading-relaxed italic">"{selectedImage.description}"</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                {filteredImages.length > 0 ? filteredImages.map(img => (
+                  <div 
+                    key={img.id} 
+                    className={`group flex flex-col cursor-pointer transition-all active:scale-95 ${multiSelectMode ? 'relative' : ''}`}
+                    onClick={() => multiSelectMode ? toggleBatchSelection(img.id) : setSelectedImageId(img.id)}
+                  >
+                    <div className={`aspect-square rounded-2xl overflow-hidden mb-2 relative shadow-sm border-2 ${
+                      batchSelectedIds.includes(img.id) ? 'border-blue-500' : 'border-white'
+                    }`}>
+                      <img src={img.url} alt={img.name} className="w-full h-full object-cover" />
+                      {multiSelectMode && (
+                        <div className={`absolute top-2 right-2 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                          batchSelectedIds.includes(img.id) ? 'bg-blue-500 border-blue-500 text-white' : 'bg-white/80 border-gray-300'
+                        }`}>
+                          {batchSelectedIds.includes(img.id) && <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={4}><path d="M5 13l4 4L19 7" /></svg>}
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-[11px] font-bold text-gray-700 truncate px-1">{img.name}</p>
+                  </div>
+                )) : (
+                  <div className="col-span-full py-20 flex flex-col items-center justify-center text-gray-300">
+                    <div className="w-16 h-16 mb-4 bg-gray-100 rounded-full flex items-center justify-center">
+                       <PlusIcon />
+                    </div>
+                    <p className="text-xs font-bold uppercase tracking-widest">{t.emptyGallery}</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        </main>
+      </div>
+      
+      {/* 语音录音状态浮层 */}
+      {isListening && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-black/80 text-white px-6 py-3 rounded-full flex items-center gap-3 shadow-2xl z-[100] animate-bounce">
+          <div className="w-3 h-3 bg-red-500 rounded-full animate-ping"></div>
+          <span className="text-sm font-bold tracking-widest">{t.listening}</span>
+        </div>
+      )}
+
+      <div className={`fixed bottom-4 left-4 flex items-center gap-2 bg-white/90 backdrop-blur-md px-3 py-1.5 rounded-full border border-gray-100 shadow-xl transition-all duration-500 ${isSaving ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
+        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+        <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Saved</span>
+      </div>
     </div>
   );
 };

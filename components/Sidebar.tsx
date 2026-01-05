@@ -10,11 +10,9 @@ interface Props {
   onSelect: (id: string) => void;
   onDeleteFolder: (id: string) => void;
   language: Language;
-  onCloudSync: (service: 'drive' | 'photos') => void;
-  onCloudFetch: (service: 'drive' | 'photos') => void;
 }
 
-export const Sidebar: React.FC<Props> = ({ folders, currentId, onSelect, onDeleteFolder, language, onCloudSync, onCloudFetch }) => {
+export const Sidebar: React.FC<Props> = ({ folders, currentId, onSelect, onDeleteFolder, language }) => {
   const t = translations[language];
 
   return (
@@ -58,56 +56,6 @@ export const Sidebar: React.FC<Props> = ({ folders, currentId, onSelect, onDelet
           </div>
         ))}
       </nav>
-
-      <div className="space-y-4 pt-4 border-t border-gray-100">
-        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest px-2">{t.cloudIntegration}</h3>
-        
-        <div className="space-y-2">
-          {/* Google Drive Section */}
-          <div className="bg-white/50 p-3 rounded-2xl border border-gray-100">
-            <div className="flex items-center gap-2 mb-3">
-              <img src="https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg" className="w-4 h-4" alt="Drive" />
-              <span className="text-xs font-bold text-gray-700">{t.googleDrive}</span>
-            </div>
-            <div className="flex flex-col gap-2">
-              <button 
-                onClick={() => onCloudSync('drive')}
-                className="text-[10px] font-black uppercase tracking-wider py-2 px-3 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors"
-              >
-                {t.syncToCloud}
-              </button>
-              <button 
-                onClick={() => onCloudFetch('drive')}
-                className="text-[10px] font-black uppercase tracking-wider py-2 px-3 border border-gray-100 text-gray-500 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                {t.fetchFromCloud}
-              </button>
-            </div>
-          </div>
-
-          {/* Google Photos Section */}
-          <div className="bg-white/50 p-3 rounded-2xl border border-gray-100">
-            <div className="flex items-center gap-2 mb-3">
-              <img src="https://upload.wikimedia.org/wikipedia/commons/a/ad/Google_Photos_icon_%282020%29.svg" className="w-4 h-4" alt="Photos" />
-              <span className="text-xs font-bold text-gray-700">{t.googlePhotos}</span>
-            </div>
-            <div className="flex flex-col gap-2">
-              <button 
-                onClick={() => onCloudSync('photos')}
-                className="text-[10px] font-black uppercase tracking-wider py-2 px-3 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 transition-colors"
-              >
-                {t.syncToCloud}
-              </button>
-              <button 
-                onClick={() => onCloudFetch('photos')}
-                className="text-[10px] font-black uppercase tracking-wider py-2 px-3 border border-gray-100 text-gray-500 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                {t.fetchFromCloud}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
 
       <div className="bg-indigo-50 p-4 rounded-2xl mt-auto">
         <p className="text-xs font-bold text-indigo-600 mb-1">AI Pro Tip</p>
